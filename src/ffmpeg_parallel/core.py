@@ -12,20 +12,8 @@ def init_worker(lock):
 
 def encode_chunk(args):
     """Encodes a single video chunk with a dedicated, lock-protected progress bar."""
-    chunk_file, encoded_chunks_dir, codec, threads_per_worker, position, encoding_options = args
+    chunk_file, encoded_chunks_dir, codec, threads_per_worker, position, encoding_options, estimated_total_frames = args
     
-    # --- Get total frames for progress bar ---
-    ffprobe_command = [
-        "ffprobe", "-v", "error", "-select_streams", "v:0", "-count_frames",
-        "-show_entries", "stream=nb_read_frames", "-of", "default=noprint_wrappers=1:nokey=1", chunk_file
-    ]
-    result = subprocess.run(ffprobe_command, capture_output=True, text=True)
-    try:
-        total_frames = int(result.stdout)
-    except (ValueError, IndexError):
-        print(f"ERROR: {result.stdout}")
-        total_frames = 0
-
     # --- Prepare for encoding ---
     chunk_name = os.path.basename(chunk_file).split('.')[0]
     output_file = os.path.join(encoded_chunks_dir, os.path.basename(chunk_file))
@@ -43,21 +31,24 @@ def encode_chunk(args):
     ffmpeg_encode_command.extend(["-progress", progress_log, output_file])
 
     # --- Run ffmpeg and monitor progress ---
+    # print(f"Worker {position+1}: Starting ffmpeg process...")
     process = subprocess.Popen(ffmpeg_encode_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # print(f"Worker {position+1}: ffmpeg process started. Monitoring progress log: {progress_log}")
     
     # Wait for the log file to be created
     while not os.path.exists(progress_log):
-        if process.poll() is not None: # Check if ffmpeg failed to start
+        if process.poll() is not None:
+            print(f"\nWorker {position+1}: ffmpeg process failed to start.")
             return None # Indicate failure
         time.sleep(0.05)
 
-    with tqdm(total=total_frames, desc=f"Worker {position+1}", position=position, unit="frame", leave=False) as pbar:
+    with tqdm(total=estimated_total_frames, desc=f"Worker {position+1}", position=position, unit="frame", leave=False) as pbar:
         with open(progress_log, 'r') as f:
             current_frame = 0
             while process.poll() is None:
                 line = f.readline()
                 if not line:
-                    time.sleep(0.1) # No new data, wait a bit
+                    time.sleep(0.1)
                     continue
                 
                 if "frame=" in line:
@@ -68,13 +59,15 @@ def encode_chunk(args):
                             pbar.update(update_amount)
                             current_frame = frame
                     except (ValueError, IndexError):
-                        continue # Ignore malformed lines
+                        continue
         
         # Final update to ensure the bar completes
-        if pbar.n < total_frames:
-            pbar.update(total_frames - pbar.n)
+        if pbar.n < estimated_total_frames:
+            pbar.update(estimated_total_frames - pbar.n)
+    # print(f"Worker {position+1}: ffmpeg process finished with code {process.returncode}")
 
     return output_file
+
 
 def run_ffmpeg_parallel(video_file, output_file, codec, workers, threads_per_worker, encoding_options):
     """Splits, encodes, and merges a video file in parallel."""
@@ -91,17 +84,40 @@ def run_ffmpeg_parallel(video_file, output_file, codec, workers, threads_per_wor
             shutil.rmtree(d)
         os.makedirs(d)
 
-    # --- Get video duration ---
-    ffprobe_command = [
-        "ffprobe", "-v", "error", "-show_entries", "format=duration",
+    # --- Get video duration from original video ---
+    ffprobe_info_command = [
+        "ffprobe", "-v", "error", 
+        "-select_streams", "v:0",
+        "-show_entries", "format=duration", 
         "-of", "default=noprint_wrappers=1:nokey=1", video_file,
     ]
-    result = subprocess.run(ffprobe_command, capture_output=True, text=True)
+    result = subprocess.run(ffprobe_info_command, capture_output=True, text=True)
     try:
         duration = float(result.stdout)
-    except (ValueError, IndexError):
-        print(f"Error: Could not get video duration from {video_file}.")
-        return
+    except (ValueError, IndexError, ZeroDivisionError) as e:
+        print(f"Error: Could not get video duration from {video_file}. Progress bars may not show ETA.")
+        print(f"ffprobe stderr: {result.stderr.strip()}")
+        print(f"ffprobe stdout: {result.stdout.strip()}")
+        duration = 0 # Fallback if ffprobe fails
+
+    # --- Get average frame rate from original video ---
+    ffprobe_info_command = [
+        "ffprobe", "-v", "error", 
+        "-select_streams", "v:0",
+        "-show_entries", "stream=avg_frame_rate", 
+        "-of", "default=noprint_wrappers=1:nokey=1", video_file,
+    ]
+    result = subprocess.run(ffprobe_info_command, capture_output=True, text=True)
+    try:
+        avg_frame_rate_str = result.stdout
+        # Convert 'num/den' fraction to float
+        num, den = map(int, avg_frame_rate_str.split('/'))
+        avg_frame_rate = num / den
+    except (ValueError, IndexError, ZeroDivisionError) as e:
+        print(f"Error: Could not get frame rate from {video_file}. Progress bars may not show ETA.")
+        print(f"ffprobe stderr: {result.stderr.strip()}")
+        print(f"ffprobe stdout: {result.stdout.strip()}")
+        avg_frame_rate = 0.0 # Fallback if ffprobe fails
 
     # --- Split video into chunks ---
     chunk_duration = math.ceil(duration / workers)
@@ -117,9 +133,31 @@ def run_ffmpeg_parallel(video_file, output_file, codec, workers, threads_per_wor
 
     # --- Encode chunks in parallel ---
     chunk_files = sorted([os.path.join(chunks_dir, f) for f in os.listdir(chunks_dir)])
+    estimated_total_frames = []
+    for chunk in chunk_files:
+        # --- Get video duration from chunk video ---
+        ffprobe_info_command = [
+            "ffprobe", "-v", "error", 
+            "-select_streams", "v:0",
+            "-show_entries", "format=duration", 
+            "-of", "default=noprint_wrappers=1:nokey=1", chunk,
+        ]
+        result = subprocess.run(ffprobe_info_command, capture_output=True, text=True)
+        try:
+            duration = float(result.stdout)
+        except (ValueError, IndexError, ZeroDivisionError) as e:
+            print(f"Error: Could not get video duration from {video_file}. Progress bars may not show ETA.")
+            print(f"ffprobe stderr: {result.stderr.strip()}")
+            print(f"ffprobe stdout: {result.stdout.strip()}")
+            duration = 0 # Fallback if ffprobe fails
+        estimated_total_frames.append(math.ceil(duration * avg_frame_rate))
+    
     manager = Manager()
     lock = manager.Lock()
-    encode_args = [(chunk, encoded_chunks_dir, codec, threads_per_worker, i, encoding_options) for i, chunk in enumerate(chunk_files)]
+    encode_args = [
+        (chunk, encoded_chunks_dir, codec, threads_per_worker, i, encoding_options, estimated_total_frames[i])
+        for i, chunk in enumerate(chunk_files)
+    ]
     
     print("\nEncoding video chunks in parallel (audio is copied)...\n")
     with Pool(processes=workers, initializer=init_worker, initargs=(lock,)) as pool:
