@@ -22,7 +22,7 @@ def encode_chunk(args):
     # --- Build the ffmpeg command ---
     ffmpeg_encode_command = [
         "ffmpeg", "-i", chunk_file, "-c:v", codec, "-c:a", "copy",
-        "-threads", str(threads_per_worker), "-y",
+        "-map", "0", "-threads", str(threads_per_worker), "-y",
     ]
     if codec in ['libx264', 'libx265']:
         ffmpeg_encode_command.extend(["-preset", encoding_options['preset'], "-crf", str(encoding_options['crf'])])
@@ -120,7 +120,7 @@ def run_ffmpeg_parallel(video_file, output_file, codec, workers, threads_per_wor
         avg_frame_rate = 0.0 # Fallback if ffprobe fails
 
     # --- Split video into chunks ---
-    chunk_duration = math.ceil(duration / workers)
+    chunk_duration = duration / workers
     video_ext = os.path.splitext(video_file)[1]
     ffmpeg_split_command = [
         "ffmpeg", "-i", video_file, "-c", "copy", "-map", "0",
@@ -160,8 +160,17 @@ def run_ffmpeg_parallel(video_file, output_file, codec, workers, threads_per_wor
     ]
     
     print("\nEncoding video chunks in parallel (audio is copied)...\n")
-    with Pool(processes=workers, initializer=init_worker, initargs=(lock,)) as pool:
-        encoded_files = pool.map(encode_chunk, encode_args)
+    pool = None # Initialize pool to None
+    try:
+        with Pool(processes=workers, initializer=init_worker, initargs=(lock,)) as pool:
+            encoded_files = pool.map(encode_chunk, encode_args)
+    except KeyboardInterrupt:
+        print("\nEncoding interrupted by user. Cleaning up...")
+        if pool:
+            pool.terminate()
+            pool.join()
+        shutil.rmtree(temp_dir)
+        return # Exit the function
     
     if None in encoded_files:
         print("\nError: One or more workers failed to encode. Aborting.")
@@ -191,7 +200,7 @@ def run_ffmpeg_parallel(video_file, output_file, codec, workers, threads_per_wor
 
     ffmpeg_merge_command = [
         "ffmpeg", "-f", "concat", "-safe", "0", "-i", concat_list_path,
-        "-c", "copy", "-y", output_file,
+        "-c", "copy", "-map", "0", "-y", output_file,
     ]
     print(f"Merging encoded chunks to {output_file}...")
     subprocess.run(ffmpeg_merge_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
