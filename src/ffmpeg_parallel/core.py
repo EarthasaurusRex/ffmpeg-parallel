@@ -12,7 +12,7 @@ def init_worker(lock):
 
 def encode_chunk(args):
     """Encodes a single video chunk with a dedicated, lock-protected progress bar."""
-    chunk_file, encoded_chunks_dir, codec, threads_per_worker, position, encoding_options, estimated_total_frames = args
+    chunk_file, encoded_chunks_dir, codec, threads_per_worker, position, encoding_options, estimated_total_frames, progress_queue = args
     
     # --- Prepare for encoding ---
     chunk_name = os.path.basename(chunk_file).split('.')[0]
@@ -31,14 +31,12 @@ def encode_chunk(args):
     ffmpeg_encode_command.extend(["-progress", progress_log, output_file])
 
     # --- Run ffmpeg and monitor progress ---
-    # print(f"Worker {position+1}: Starting ffmpeg process...")
     process = subprocess.Popen(ffmpeg_encode_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    # print(f"Worker {position+1}: ffmpeg process started. Monitoring progress log: {progress_log}")
     
     # Wait for the log file to be created
     while not os.path.exists(progress_log):
         if process.poll() is not None:
-            print(f"\nWorker {position+1}: ffmpeg process failed to start.")
+            # print(f"\nWorker {position+1}: ffmpeg process failed to start.")
             return None # Indicate failure
         time.sleep(0.05)
 
@@ -57,14 +55,16 @@ def encode_chunk(args):
                         update_amount = frame - current_frame
                         if update_amount > 0:
                             pbar.update(update_amount)
+                            progress_queue.put(update_amount)
                             current_frame = frame
                     except (ValueError, IndexError):
                         continue
         
         # Final update to ensure the bar completes
-        if pbar.n < estimated_total_frames:
-            pbar.update(estimated_total_frames - pbar.n)
-    # print(f"Worker {position+1}: ffmpeg process finished with code {process.returncode}")
+        if pbar.n < estimated_total_frames:     
+            update_amount = estimated_total_frames - pbar.n
+            pbar.update(update_amount)
+            progress_queue.put(update_amount)
 
     return output_file
 
@@ -154,16 +154,39 @@ def run_ffmpeg_parallel(video_file, output_file, codec, workers, threads_per_wor
     
     manager = Manager()
     lock = manager.Lock()
+    tqdm.set_lock(lock)
+    progress_queue = manager.Queue()
+    total_frames_estimate = sum(estimated_total_frames)
+
     encode_args = [
-        (chunk, encoded_chunks_dir, codec, threads_per_worker, i, encoding_options, estimated_total_frames[i])
+        (chunk, encoded_chunks_dir, codec, threads_per_worker, i, encoding_options, estimated_total_frames[i], progress_queue)
         for i, chunk in enumerate(chunk_files)
     ]
     
     print("\nEncoding video chunks in parallel (audio is copied)...\n")
     pool = None # Initialize pool to None
     try:
-        with Pool(processes=workers, initializer=init_worker, initargs=(lock,)) as pool:
-            encoded_files = pool.map(encode_chunk, encode_args)
+        with Pool(processes=workers, initializer=init_worker, initargs=(lock,)) as pool, \
+             tqdm(total=total_frames_estimate, desc="Overall Progress", unit="frame", position=workers) as overall_pbar:
+            
+            map_result = pool.map_async(encode_chunk, encode_args)
+
+            while not map_result.ready():
+                while not progress_queue.empty():
+                    update = progress_queue.get_nowait()
+                    overall_pbar.update(update)
+                time.sleep(0.1)
+            
+            # Final queue drain and progress bar update
+            while not progress_queue.empty():
+                update = progress_queue.get_nowait()
+                overall_pbar.update(update)
+            
+            if overall_pbar.n < total_frames_estimate:
+                overall_pbar.update(total_frames_estimate - overall_pbar.n)
+
+            encoded_files = map_result.get()
+
     except KeyboardInterrupt:
         print("\nEncoding interrupted by user. Cleaning up...")
         if pool:
