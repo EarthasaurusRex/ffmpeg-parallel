@@ -11,7 +11,7 @@ def main():
     parser.add_argument("-o", "--output", type=str, help="The path for the output file. Defaults to the input directory.")
     parser.add_argument(
         "-c", "--codec", 
-        default="libx264", 
+        default="libx265", 
         choices=['libx264', 'libx265', 'libsvtav1'], 
         help="The video codec to use for encoding."
     )
