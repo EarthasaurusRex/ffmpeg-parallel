@@ -1,6 +1,7 @@
 import subprocess
 import os
 import math
+import hashlib
 import shutil
 import time
 from multiprocessing import Pool, Manager
@@ -21,13 +22,22 @@ def encode_chunk(args):
 
     # --- Build the ffmpeg command ---
     ffmpeg_encode_command = [
-        "ffmpeg", "-i", chunk_file, "-c:v", codec, "-c:a", "copy",
-        "-map", "0", "-threads", str(threads_per_worker), "-y",
+        "ffmpeg", "-i", chunk_file, "-c:v", codec,
+        "-map", "0:v", "-threads", str(threads_per_worker), "-y",
     ]
     if codec in ['libx264', 'libx265']:
         ffmpeg_encode_command.extend(["-preset", encoding_options['preset'], "-crf", str(encoding_options['crf'])])
     elif codec == 'libsvtav1':
         ffmpeg_encode_command.extend(["-preset", encoding_options['preset'], "-qp", str(encoding_options['qp'])])
+    if encoding_options["merge_audio"]:
+        result = subprocess.run(
+            ["ffprobe", "-loglevel", "error", "-select_streams", "a",
+             "-show_entries", "stream=codec_type", "-of", "csv=p=0", chunk_file],
+             capture_output=True)
+        audio_tracks = len(result.stdout.split())
+        ffmpeg_encode_command.extend(["-filter_complex", f"amerge=inputs={audio_tracks}", "-c:a", "flac", "-b:a", "320k"])
+    else:
+        ffmpeg_encode_command.extend(["-c:a", "copy"])
     ffmpeg_encode_command.extend(["-progress", progress_log, output_file])
 
     # --- Run ffmpeg and monitor progress ---
@@ -76,7 +86,21 @@ def run_ffmpeg_parallel(video_file, output_file, codec, workers, threads_per_wor
     print(f"  Encoding options: {encoding_options}")
 
     # --- Setup temporary directories ---
-    temp_dir = "ffmpeg_parallel_temp"
+    
+    if output_file is None:
+        codec_display_names = {
+            'libx264': 'H.264',
+            'libx265': 'H.265',
+            'libsvtav1': 'AV1',
+        }
+        codec_suffix = codec_display_names.get(codec, codec) # Fallback to raw codec name if not found
+
+        input_dir = os.path.dirname(os.path.abspath(video_file))
+        base_name = os.path.splitext(os.path.basename(video_file))[0]
+        video_ext = os.path.splitext(video_file)[1]
+        output_file = os.path.join(input_dir, f"{base_name} [{codec_suffix}]{video_ext}")
+
+    temp_dir = f"ffmpeg_parallel_temp {hashlib.md5(str.encode(os.path.split(output_file)[-1])).hexdigest()}"
     chunks_dir = os.path.join(temp_dir, "chunks")
     encoded_chunks_dir = os.path.join(temp_dir, "encoded_chunks")
     for d in [chunks_dir, encoded_chunks_dir]:
@@ -123,10 +147,12 @@ def run_ffmpeg_parallel(video_file, output_file, codec, workers, threads_per_wor
     chunk_duration = duration / workers
     video_ext = os.path.splitext(video_file)[1]
     ffmpeg_split_command = [
-        "ffmpeg", "-i", video_file, "-c", "copy", "-map", "0",
+        "ffmpeg", "-i", video_file, "-map", "0", "-c", "copy",
+    ]
+    ffmpeg_split_command.extend([
         "-segment_time", str(chunk_duration), "-f", "segment",
         os.path.join(chunks_dir, f"chunk_%03d{video_ext}"),
-    ]
+    ])
     print(f"Splitting video into chunks...")
     subprocess.run(ffmpeg_split_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     print("Splitting complete.")
@@ -159,8 +185,8 @@ def run_ffmpeg_parallel(video_file, output_file, codec, workers, threads_per_wor
     total_frames_estimate = sum(estimated_total_frames)
 
     encode_args = [
-        (chunk, encoded_chunks_dir, codec, threads_per_worker, i, encoding_options, estimated_total_frames[i], progress_queue)
-        for i, chunk in enumerate(chunk_files)
+        (chunk, encoded_chunks_dir, codec, threads_per_worker, position, encoding_options, estimated_total_frames[position], progress_queue)
+        for position, chunk in enumerate(chunk_files)
     ]
     
     print("\nEncoding video chunks in parallel (audio is copied)...\n")
@@ -203,18 +229,6 @@ def run_ffmpeg_parallel(video_file, output_file, codec, workers, threads_per_wor
     print("\nEncoding complete.")
 
     # --- Merge encoded chunks ---
-    if output_file is None:
-        codec_display_names = {
-            'libx264': 'H.264',
-            'libx265': 'H.265',
-            'libsvtav1': 'AV1',
-        }
-        codec_suffix = codec_display_names.get(codec, codec) # Fallback to raw codec name if not found
-
-        input_dir = os.path.dirname(os.path.abspath(video_file))
-        base_name = os.path.splitext(os.path.basename(video_file))[0]
-        output_file = os.path.join(input_dir, f"{base_name} [{codec_suffix}]{video_ext}")
-
     concat_list_path = os.path.join(encoded_chunks_dir, "concat_list.txt")
     with open(concat_list_path, "w") as f:
         for file in sorted(encoded_files):
