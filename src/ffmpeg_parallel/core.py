@@ -22,8 +22,8 @@ def encode_chunk(args):
 
     # --- Build the ffmpeg command ---
     ffmpeg_encode_command = [
-        "ffmpeg", "-i", chunk_file, "-c:v", codec,
-        "-map", "0:v", "-threads", str(threads_per_worker), "-y",
+        "ffmpeg", "-i", chunk_file, "-c:v", codec, "-map", "0:v",
+        "-threads", str(threads_per_worker), "-y",
     ]
     if codec in ['libx264', 'libx265']:
         ffmpeg_encode_command.extend(["-preset", encoding_options['preset'], "-crf", str(encoding_options['crf'])])
@@ -150,8 +150,8 @@ def run_ffmpeg_parallel(video_file, output_file, codec, workers, threads_per_wor
         "ffmpeg", "-i", video_file, "-map", "0", "-c", "copy",
     ]
     ffmpeg_split_command.extend([
-        "-segment_time", str(chunk_duration), "-f", "segment",
-        os.path.join(chunks_dir, f"chunk_%03d{video_ext}"),
+        "-segment_time", str(chunk_duration), "-f", "segment", "-reset_timestamps", "1",
+        os.path.join(chunks_dir, f"chunk_%03d.mkv"),
     ])
     print(f"Splitting video into chunks...")
     subprocess.run(ffmpeg_split_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
