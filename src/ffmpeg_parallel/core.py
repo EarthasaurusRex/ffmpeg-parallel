@@ -37,7 +37,7 @@ def encode_chunk(args):
         audio_tracks = len(result.stdout.split())
         ffmpeg_encode_command.extend(["-filter_complex", f"amerge=inputs={audio_tracks}", "-c:a", "flac", "-b:a", "320k"])
     else:
-        ffmpeg_encode_command.extend(["-c:a", "copy"])
+        ffmpeg_encode_command.extend(["-map 0:a", "-c:a", "copy"])
     ffmpeg_encode_command.extend(["-progress", progress_log, output_file])
 
     # --- Run ffmpeg and monitor progress ---
