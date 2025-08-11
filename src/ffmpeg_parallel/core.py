@@ -36,7 +36,7 @@ def get_video_info(video_file: str) -> dict:
     ffprobe_info_command = [
         "ffprobe", "-v", "error", "-select_streams", "v:0",
         "-show_entries", "format=duration:stream=avg_frame_rate", 
-        "-of", "default=noprint_wrappers=1:nokey=1", video_file,
+        "-of", "default=noprint_wrappers=1", video_file,
     ]
     result = subprocess.run(ffprobe_info_command, capture_output=True, text=True)
 
