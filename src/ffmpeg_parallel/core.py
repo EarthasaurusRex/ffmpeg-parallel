@@ -7,9 +7,58 @@ import time
 from multiprocessing import Pool, Manager
 from tqdm import tqdm
 
-def init_worker(lock):
+def init_worker(lock) -> None:
     """Initializes each worker process with a shared lock for tqdm."""
     tqdm.set_lock(lock)
+
+def generate_temp_directory(video_file: str) -> tuple[str, str, str]:
+    """Creates a temporary directory for encoding a video"""
+    file_hash = hashlib.md5(str.encode(os.path.split(video_file)[-1])).hexdigest()
+    temp_dir = f"ffmpeg_parallel_temp_{file_hash}"
+    chunks_dir = os.path.join(temp_dir, "chunks")
+    encoded_chunks_dir = os.path.join(temp_dir, "encoded_chunks")
+    for directory in [chunks_dir, encoded_chunks_dir]:
+        if os.path.exists(directory):
+            shutil.rmtree(directory)
+        os.makedirs(directory)
+    
+    return temp_dir, chunks_dir, encoded_chunks_dir
+
+def get_video_info(video_file: str) -> dict:
+    """Gets necessary info about a video file
+
+    Args:
+        video_file (str): Path to video file
+
+    Returns:
+        tuple[str]: _description_
+    """
+    ffprobe_info_command = [
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "format=duration:stream=avg_frame_rate", 
+        "-of", "default=noprint_wrappers=1:nokey=1", video_file,
+    ]
+    result = subprocess.run(ffprobe_info_command, capture_output=True, text=True)
+
+    video_info: dict = {key: value for key, value in
+                        (line.split('=', 1) for line in result.stdout.splitlines())}
+    
+    return video_info
+
+def chunk_video(video_file: str, chunks_dir: str, chunk_duration: float) -> None:
+    """Split video file into chunks
+
+    Args:
+        video_file (str): Path to video file
+    """
+    ffmpeg_split_command = [
+        "ffmpeg", "-i", video_file, "-map", "0", "-c", "copy",
+        "-segment_time", str(chunk_duration), "-f", "segment", "-reset_timestamps", "1",
+        os.path.join(chunks_dir, "chunk_%03d.mkv")
+    ]
+    print("Splitting video into chunks...")
+    subprocess.run(ffmpeg_split_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+    print("Splitting complete.")
 
 def encode_chunk(args):
     """Encodes a single video chunk with a dedicated, lock-protected progress bar."""
@@ -33,7 +82,7 @@ def encode_chunk(args):
         result = subprocess.run(
             ["ffprobe", "-loglevel", "error", "-select_streams", "a",
              "-show_entries", "stream=codec_type", "-of", "csv=p=0", chunk_file],
-             capture_output=True)
+             capture_output=True, check=True)
         audio_tracks = len(result.stdout.split())
         ffmpeg_encode_command.extend(["-filter_complex", f"amerge=inputs={audio_tracks}", "-c:a", "flac", "-b:a", "320k"])
     else:
@@ -51,7 +100,7 @@ def encode_chunk(args):
         time.sleep(0.05)
 
     with tqdm(total=estimated_total_frames, desc=f"Worker {position+1}", position=position, unit="frame", leave=False) as pbar:
-        with open(progress_log, 'r') as f:
+        with open(progress_log, 'r', encoding='utf-8') as f:
             current_frame = 0
             while process.poll() is None:
                 line = f.readline()
@@ -78,15 +127,53 @@ def encode_chunk(args):
 
     return output_file
 
+def print_size_comparison(original_file: str, comparison_file: str):
+    """Prints the size comparison between 2 video files
 
-def run_ffmpeg_parallel(video_file, output_file, codec, workers, threads_per_worker, encoding_options):
+    Args:
+        video_file (str): _description_
+        output_file (str): _description_
+    """
+    try:
+        original_size = os.path.getsize(original_file)
+        comparison_size = os.path.getsize(comparison_file)
+        if original_size > 0:
+            percentage = (comparison_size / original_size) * 100
+            print(f"Encoded file size: {comparison_size / (1024*1024):.2f} MiB")
+            print(f"Original file size: {original_size / (1024*1024):.2f} MiB")
+            print(f"Encoded file is {percentage:.2f}% of the original size.")
+        else:
+            print("Warning: Original file size is 0, cannot calculate percentage.")
+    except FileNotFoundError:
+        print("Warning: Could not find original or comparison file for size comparison.")
+    except Exception as e:
+        print(f"Error calculating file size comparison: {e}")
+
+def merge_chunks(chunks: list[str], temp_dir: str, output_file: str):
+    """Merges chunks into a single video
+
+    Args:
+        chunks (_type_): _description_
+    """
+    concat_list_path = os.path.join(temp_dir, "concat_list.txt")
+    with open(concat_list_path, 'w', encoding='utf-8') as f:
+        for file in sorted(chunks):
+            safe_path = os.path.abspath(file).replace('\\', '/')
+            f.write(f"file '{safe_path}'\n")
+
+    ffmpeg_merge_command = [
+        "ffmpeg", "-f", "concat", "-safe", "0", "-i", concat_list_path,
+        "-c", "copy", "-map", "0", "-y", output_file,
+    ]
+    print(f"Merging encoded chunks to {output_file}...")
+    subprocess.run(ffmpeg_merge_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+
+def run_ffmpeg_parallel(video_file: str, output_file: str, codec: str, workers: int, threads_per_worker: int, encoding_options: dict):
     """Splits, encodes, and merges a video file in parallel."""
     print(f"Starting parallel encode for {video_file}:")
     print(f"  Codec: {codec}, Workers: {workers}, Threads per worker: {threads_per_worker}")
     print(f"  Encoding options: {encoding_options}")
 
-    # --- Setup temporary directories ---
-    
     if output_file is None:
         codec_display_names = {
             'libx264': 'H.264',
@@ -99,83 +186,21 @@ def run_ffmpeg_parallel(video_file, output_file, codec, workers, threads_per_wor
         base_name = os.path.splitext(os.path.basename(video_file))[0]
         video_ext = os.path.splitext(video_file)[1]
         output_file = os.path.join(input_dir, f"{base_name} [{codec_suffix}]{video_ext}")
+    
+    temp_dir, chunks_dir, encoded_chunks_dir = generate_temp_directory(output_file)
 
-    temp_dir = f"ffmpeg_parallel_temp {hashlib.md5(str.encode(os.path.split(output_file)[-1])).hexdigest()}"
-    chunks_dir = os.path.join(temp_dir, "chunks")
-    encoded_chunks_dir = os.path.join(temp_dir, "encoded_chunks")
-    for d in [chunks_dir, encoded_chunks_dir]:
-        if os.path.exists(d):
-            shutil.rmtree(d)
-        os.makedirs(d)
+    video_info = get_video_info(video_file)
+    duration = video_info['duration']
+    numerator, denominator = video_info['avg_frame_rate']
+    avg_frame_rate = numerator / denominator
 
-    # --- Get video duration from original video ---
-    ffprobe_info_command = [
-        "ffprobe", "-v", "error", 
-        "-select_streams", "v:0",
-        "-show_entries", "format=duration", 
-        "-of", "default=noprint_wrappers=1:nokey=1", video_file,
-    ]
-    result = subprocess.run(ffprobe_info_command, capture_output=True, text=True)
-    try:
-        duration = float(result.stdout)
-    except (ValueError, IndexError, ZeroDivisionError) as e:
-        print(f"Error: Could not get video duration from {video_file}. Progress bars may not show ETA.")
-        print(f"ffprobe stderr: {result.stderr.strip()}")
-        print(f"ffprobe stdout: {result.stdout.strip()}")
-        duration = 0 # Fallback if ffprobe fails
+    chunk_video(video_file, chunks_dir, duration/workers)
 
-    # --- Get average frame rate from original video ---
-    ffprobe_info_command = [
-        "ffprobe", "-v", "error", 
-        "-select_streams", "v:0",
-        "-show_entries", "stream=avg_frame_rate", 
-        "-of", "default=noprint_wrappers=1:nokey=1", video_file,
-    ]
-    result = subprocess.run(ffprobe_info_command, capture_output=True, text=True)
-    try:
-        avg_frame_rate_str = result.stdout
-        # Convert 'num/den' fraction to float
-        num, den = map(int, avg_frame_rate_str.split('/'))
-        avg_frame_rate = num / den
-    except (ValueError, IndexError, ZeroDivisionError) as e:
-        print(f"Error: Could not get frame rate from {video_file}. Progress bars may not show ETA.")
-        print(f"ffprobe stderr: {result.stderr.strip()}")
-        print(f"ffprobe stdout: {result.stdout.strip()}")
-        avg_frame_rate = 0.0 # Fallback if ffprobe fails
-
-    # --- Split video into chunks ---
-    chunk_duration = duration / workers
-    video_ext = os.path.splitext(video_file)[1]
-    ffmpeg_split_command = [
-        "ffmpeg", "-i", video_file, "-map", "0", "-c", "copy",
-    ]
-    ffmpeg_split_command.extend([
-        "-segment_time", str(chunk_duration), "-f", "segment", "-reset_timestamps", "1",
-        os.path.join(chunks_dir, f"chunk_%03d.mkv"),
-    ])
-    print(f"Splitting video into chunks...")
-    subprocess.run(ffmpeg_split_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    print("Splitting complete.")
-
-    # --- Encode chunks in parallel ---
     chunk_files = sorted([os.path.join(chunks_dir, f) for f in os.listdir(chunks_dir)])
     estimated_total_frames = []
     for chunk in chunk_files:
-        # --- Get video duration from chunk video ---
-        ffprobe_info_command = [
-            "ffprobe", "-v", "error", 
-            "-select_streams", "v:0",
-            "-show_entries", "format=duration", 
-            "-of", "default=noprint_wrappers=1:nokey=1", chunk,
-        ]
-        result = subprocess.run(ffprobe_info_command, capture_output=True, text=True)
-        try:
-            duration = float(result.stdout)
-        except (ValueError, IndexError, ZeroDivisionError) as e:
-            print(f"Error: Could not get video duration from {video_file}. Progress bars may not show ETA.")
-            print(f"ffprobe stderr: {result.stderr.strip()}")
-            print(f"ffprobe stdout: {result.stdout.strip()}")
-            duration = 0 # Fallback if ffprobe fails
+        video_info = get_video_info(chunk)
+        duration = video_info['duration']
         estimated_total_frames.append(math.ceil(duration * avg_frame_rate))
     
     manager = Manager()
@@ -193,7 +218,7 @@ def run_ffmpeg_parallel(video_file, output_file, codec, workers, threads_per_wor
     pool = None # Initialize pool to None
     try:
         with Pool(processes=workers, initializer=init_worker, initargs=(lock,)) as pool, \
-             tqdm(total=total_frames_estimate, desc="Overall Progress", unit="frame", position=workers) as overall_pbar:
+            tqdm(total=total_frames_estimate, desc="Overall Progress", unit="frame", position=workers) as overall_pbar:
             
             map_result = pool.map_async(encode_chunk, encode_args)
 
@@ -211,7 +236,7 @@ def run_ffmpeg_parallel(video_file, output_file, codec, workers, threads_per_wor
             if overall_pbar.n < total_frames_estimate:
                 overall_pbar.update(total_frames_estimate - overall_pbar.n)
 
-            encoded_files = map_result.get()
+            encoded_files: list = map_result.get()
 
     except KeyboardInterrupt:
         print("\nEncoding interrupted by user. Cleaning up...")
@@ -219,7 +244,7 @@ def run_ffmpeg_parallel(video_file, output_file, codec, workers, threads_per_wor
             pool.terminate()
             pool.join()
         shutil.rmtree(temp_dir)
-        return # Exit the function
+        return
     
     if None in encoded_files:
         print("\nError: One or more workers failed to encode. Aborting.")
@@ -228,38 +253,11 @@ def run_ffmpeg_parallel(video_file, output_file, codec, workers, threads_per_wor
 
     print("\nEncoding complete.")
 
-    # --- Merge encoded chunks ---
-    concat_list_path = os.path.join(encoded_chunks_dir, "concat_list.txt")
-    with open(concat_list_path, "w") as f:
-        for file in sorted(encoded_files):
-            safe_path = os.path.abspath(file).replace('\\', '/')
-            f.write(f"file '{safe_path}'\n")
+    merge_chunks(encoded_files, temp_dir, output_file)
 
-    ffmpeg_merge_command = [
-        "ffmpeg", "-f", "concat", "-safe", "0", "-i", concat_list_path,
-        "-c", "copy", "-map", "0", "-y", output_file,
-    ]
-    print(f"Merging encoded chunks to {output_file}...")
-    subprocess.run(ffmpeg_merge_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    
-    # --- Clean up ---
     shutil.rmtree(temp_dir)
     print(f"Successfully created output file: {output_file}")
 
-    # --- Print size comparison ---
-    try:
-        original_size = os.path.getsize(video_file)
-        encoded_size = os.path.getsize(output_file)
-        if original_size > 0:
-            percentage = (encoded_size / original_size) * 100
-            print(f"Encoded file size: {encoded_size / (1024*1024):.2f} MB")
-            print(f"Original file size: {original_size / (1024*1024):.2f} MB")
-            print(f"Encoded file is {percentage:.2f}% of the original size.")
-        else:
-            print("Warning: Original file size is 0, cannot calculate percentage.")
-    except FileNotFoundError:
-        print("Warning: Could not find original or encoded file for size comparison.")
-    except Exception as e:
-        print(f"Error calculating file size comparison: {e}")
+    print_size_comparison(video_file, output_file)
 
     print("Done.")
