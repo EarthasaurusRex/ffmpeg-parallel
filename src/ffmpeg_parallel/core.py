@@ -175,29 +175,31 @@ def run_ffmpeg_parallel(video_file: str, output_file: str, codec: str, workers: 
     print(f"  Encoding options: {encoding_options}")
 
     if output_file is None:
-        codec_display_names = {
+        codec_display_names: dict = {
             'libx264': 'H.264',
             'libx265': 'H.265',
             'libsvtav1': 'AV1',
         }
-        codec_suffix = codec_display_names.get(codec, codec) # Fallback to raw codec name if not found
+        codec_suffix: str = codec_display_names.get(codec, codec) # Fallback to raw codec name if not found
 
-        input_dir = os.path.dirname(os.path.abspath(video_file))
-        base_name = os.path.splitext(os.path.basename(video_file))[0]
-        video_ext = '.mp4' #os.path.splitext(video_file)[1]
+        input_dir: str = os.path.dirname(os.path.abspath(video_file))
+        base_name: str = os.path.splitext(os.path.basename(video_file))[0]
+        video_ext: str = '.mp4' #os.path.splitext(video_file)[1]
         output_file = os.path.join(input_dir, f"{base_name} [{codec_suffix}]{video_ext}")
     
     temp_dir, chunks_dir, encoded_chunks_dir = generate_temp_directory(output_file)
 
     video_info: dict = get_video_info(video_file)
-    duration: float = float(video_info['duration'])
-    numerator, denominator = video_info['avg_frame_rate'].split('/')
-    avg_frame_rate: float = int(numerator) / int(denominator)
+    duration: float = float(video_info.get('duration', 0))
+    numerator: int
+    denominator: int
+    numerator, denominator = (int(x) for x in video_info.get('avg_frame_rate', '0/0').split('/'))
+    avg_frame_rate: float = numerator / denominator
 
     chunk_video(video_file, chunks_dir, duration/workers)
 
-    chunk_files = sorted([os.path.join(chunks_dir, f) for f in os.listdir(chunks_dir)])
-    estimated_total_frames = []
+    chunk_files: list[str] = sorted([os.path.join(chunks_dir, f) for f in os.listdir(chunks_dir)])
+    estimated_total_frames: list[int] = []
     for chunk in chunk_files:
         video_info = get_video_info(chunk)
         chunk_duration: float = float(video_info['duration'])
@@ -207,7 +209,7 @@ def run_ffmpeg_parallel(video_file: str, output_file: str, codec: str, workers: 
     lock = manager.Lock()
     tqdm.set_lock(lock)
     progress_queue = manager.Queue()
-    total_frames_estimate = sum(estimated_total_frames)
+    total_frames_estimate: int = sum(estimated_total_frames)
 
     encode_args = [
         (chunk, encoded_chunks_dir, codec, threads_per_worker, position, encoding_options, estimated_total_frames[position], progress_queue)
