@@ -38,7 +38,7 @@ def get_video_info(video_file: str) -> dict:
         "-show_entries", "format=duration:stream=avg_frame_rate", 
         "-of", "default=noprint_wrappers=1", video_file,
     ]
-    result = subprocess.run(ffprobe_info_command, capture_output=True, text=True)
+    result = subprocess.run(ffprobe_info_command, capture_output=True, text=True, check=True)
 
     video_info: dict = {key: value for key, value in
                         (line.split('=', 1) for line in result.stdout.splitlines())}
@@ -60,7 +60,7 @@ def chunk_video(video_file: str, chunks_dir: str, chunk_duration: float) -> None
     subprocess.run(ffmpeg_split_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
     print("Splitting complete.")
 
-def encode_chunk(args):
+def encode_chunk(args) -> None:
     """Encodes a single video chunk with a dedicated, lock-protected progress bar."""
     chunk_file, encoded_chunks_dir, codec, threads_per_worker, position, encoding_options, estimated_total_frames, progress_queue = args
     
@@ -127,12 +127,31 @@ def encode_chunk(args):
 
     return output_file
 
-def print_size_comparison(original_file: str, comparison_file: str):
+def merge_chunks(chunks: list[str], temp_dir: str, output_file: str) -> None:
+    """Merges chunks into a single video
+
+    Args:
+        chunks (list[str]): List of chunk files
+    """
+    concat_list_path = os.path.join(temp_dir, "concat_list.txt")
+    with open(concat_list_path, 'w', encoding='utf-8') as f:
+        for file in sorted(chunks):
+            safe_path = os.path.abspath(file).replace('\\', '/')
+            f.write(f"file '{safe_path}'\n")
+
+    ffmpeg_merge_command = [
+        "ffmpeg", "-f", "concat", "-safe", "0", "-i", concat_list_path,
+        "-c", "copy", "-map", "0", "-y", output_file,
+    ]
+    print(f"Merging encoded chunks to {output_file}...")
+    subprocess.run(ffmpeg_merge_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+
+def print_size_comparison(original_file: str, comparison_file: str) -> None:
     """Prints the size comparison between 2 video files
 
     Args:
-        video_file (str): _description_
-        output_file (str): _description_
+        original_file (str): Path to original file being compared against
+        comparison_file (str): Path to file to make the comparison of
     """
     try:
         original_size = os.path.getsize(original_file)
@@ -148,25 +167,6 @@ def print_size_comparison(original_file: str, comparison_file: str):
         print("Warning: Could not find original or comparison file for size comparison.")
     except Exception as e:
         print(f"Error calculating file size comparison: {e}")
-
-def merge_chunks(chunks: list[str], temp_dir: str, output_file: str):
-    """Merges chunks into a single video
-
-    Args:
-        chunks (_type_): _description_
-    """
-    concat_list_path = os.path.join(temp_dir, "concat_list.txt")
-    with open(concat_list_path, 'w', encoding='utf-8') as f:
-        for file in sorted(chunks):
-            safe_path = os.path.abspath(file).replace('\\', '/')
-            f.write(f"file '{safe_path}'\n")
-
-    ffmpeg_merge_command = [
-        "ffmpeg", "-f", "concat", "-safe", "0", "-i", concat_list_path,
-        "-c", "copy", "-map", "0", "-y", output_file,
-    ]
-    print(f"Merging encoded chunks to {output_file}...")
-    subprocess.run(ffmpeg_merge_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
 
 def run_ffmpeg_parallel(video_file: str, output_file: str, codec: str, workers: int, threads_per_worker: int, encoding_options: dict):
     """Splits, encodes, and merges a video file in parallel."""
@@ -184,7 +184,7 @@ def run_ffmpeg_parallel(video_file: str, output_file: str, codec: str, workers: 
 
         input_dir = os.path.dirname(os.path.abspath(video_file))
         base_name = os.path.splitext(os.path.basename(video_file))[0]
-        video_ext = os.path.splitext(video_file)[1]
+        video_ext = '.mp4' #os.path.splitext(video_file)[1]
         output_file = os.path.join(input_dir, f"{base_name} [{codec_suffix}]{video_ext}")
     
     temp_dir, chunks_dir, encoded_chunks_dir = generate_temp_directory(output_file)
@@ -256,6 +256,7 @@ def run_ffmpeg_parallel(video_file: str, output_file: str, codec: str, workers: 
     merge_chunks(encoded_files, temp_dir, output_file)
 
     shutil.rmtree(temp_dir)
+
     print(f"Successfully created output file: {output_file}")
 
     print_size_comparison(video_file, output_file)
