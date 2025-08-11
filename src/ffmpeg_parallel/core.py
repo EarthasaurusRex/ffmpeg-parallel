@@ -189,10 +189,10 @@ def run_ffmpeg_parallel(video_file: str, output_file: str, codec: str, workers: 
     
     temp_dir, chunks_dir, encoded_chunks_dir = generate_temp_directory(output_file)
 
-    video_info = get_video_info(video_file)
-    duration = video_info['duration']
-    numerator, denominator = video_info['avg_frame_rate']
-    avg_frame_rate = numerator / denominator
+    video_info: dict = get_video_info(video_file)
+    duration: float = float(video_info['duration'])
+    numerator, denominator = video_info['avg_frame_rate'].split('/')
+    avg_frame_rate: float = int(numerator) / int(denominator)
 
     chunk_video(video_file, chunks_dir, duration/workers)
 
@@ -200,8 +200,8 @@ def run_ffmpeg_parallel(video_file: str, output_file: str, codec: str, workers: 
     estimated_total_frames = []
     for chunk in chunk_files:
         video_info = get_video_info(chunk)
-        duration = video_info['duration']
-        estimated_total_frames.append(math.ceil(duration * avg_frame_rate))
+        chunk_duration: float = float(video_info['duration'])
+        estimated_total_frames.append(math.ceil(chunk_duration * avg_frame_rate))
     
     manager = Manager()
     lock = manager.Lock()
