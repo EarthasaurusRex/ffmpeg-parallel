@@ -60,7 +60,7 @@ def chunk_video(video_file: str, chunks_dir: str, chunk_duration: float) -> None
     ffmpeg_split_command = [
         "ffmpeg", "-i", video_file, "-map", "0", "-c", "copy",
         "-segment_time", str(chunk_duration), "-f", "segment", "-reset_timestamps", "1",
-        os.path.join(chunks_dir, "chunk_%03d.mkv")
+        os.path.join(chunks_dir, "chunk_%03d.mp4")
     ]
     print("Splitting video into chunks...")
     subprocess.run(ffmpeg_split_command, stdout=subprocess.DEVNULL,
