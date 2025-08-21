@@ -1,4 +1,5 @@
 import argparse
+import os
 from .core import run_ffmpeg_parallel
 
 def main():
@@ -7,7 +8,7 @@ def main():
         formatter_class=argparse.RawTextHelpFormatter  # Allows for better formatting in help text
     )
         
-    parser.add_argument("video_file", help="The path to the video file to encode.")
+    parser.add_argument("video_files", nargs='+', help="The path(s) to the video file(s) to encode.")
     parser.add_argument("-o", "--output", type=str, help="The path for the output file. Defaults to the input directory.")
     parser.add_argument(
         "-c", "--codec", 
@@ -47,11 +48,31 @@ def main():
         'merge_audio': args.merge
     }
 
-    run_ffmpeg_parallel(
-        video_file=args.video_file, 
-        output_file=args.output,
-        codec=args.codec, 
-        workers=args.workers, 
-        threads_per_worker=args.threads_per_worker,
-        encoding_options=encoding_options,
-    )
+    if len(args.video_files) > 1 and args.output and not os.path.isdir(args.output):
+        parser.error("When processing multiple files, the output path must be a directory.")
+
+    for video_file in args.video_files:
+        output_path = None
+        if args.output:
+            if os.path.isdir(args.output):
+                base_name = os.path.splitext(os.path.basename(video_file))[0]
+                video_ext = '.mp4'
+                codec_display_names: dict = {
+                    'libx264': 'H.264',
+                    'libx265': 'H.265',
+                    'libsvtav1': 'AV1',
+                }
+                codec_suffix: str = codec_display_names.get(args.codec, args.codec)
+                output_filename = f"{base_name} [{codec_suffix}]{video_ext}"
+                output_path = os.path.join(args.output, output_filename)
+            else: # It's a file path, only valid for single video
+                output_path = args.output
+        
+        run_ffmpeg_parallel(
+            video_file=video_file,
+            output_file=output_path,
+            codec=args.codec,
+            workers=args.workers,
+            threads_per_worker=args.threads_per_worker,
+            encoding_options=encoding_options,
+        )
