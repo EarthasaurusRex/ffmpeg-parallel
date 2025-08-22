@@ -28,6 +28,12 @@ To encode a video with default settings (libx264, 4 workers, 2 threads per worke
 ffmpeg-parallel "path/to/your/video.mp4"
 ```
 
+To encode multiple videos with default settings:
+
+```bash
+ffmpeg-parallel "path/to/your/video.mp4" "path/to/second/video.mp4"
+```
+
 The output file will be saved in the same directory as the input video.
 
 ### Advanced Usage
