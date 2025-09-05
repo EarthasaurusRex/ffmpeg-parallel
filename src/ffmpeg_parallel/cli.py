@@ -52,7 +52,7 @@ def main():
         parser.error("When processing multiple files, the output path must be a directory.")
 
     for video_file in args.video_files:
-        output_path = None
+        output_path = ""
         if args.output:
             if os.path.isdir(args.output):
                 base_name = os.path.splitext(os.path.basename(video_file))[0]
