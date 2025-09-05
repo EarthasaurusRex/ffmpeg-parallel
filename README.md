@@ -1,6 +1,6 @@
 # ffmpeg-parallel
 
-A tool to run ffmpeg encodes in parallel.
+A tool to split a video and run ffmpeg encodes in parallel.
 
 ## Installation
 
