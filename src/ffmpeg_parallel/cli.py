@@ -25,7 +25,7 @@ def main():
         "For libx264/libx265: ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow.\n"
         "For libsvtav1: A number from 0-13, where higher is faster."
     )
-    parser.add_argument("--preset", type=str, default=None, help=preset_help)
+    parser.add_argument("-p", "--preset", type=str, default=None, help=preset_help)
     parser.add_argument("--crf", type=int, default=23, help="Constant Rate Factor for libx264/libx265 (0-51, lower is better quality).")
     parser.add_argument("--qp", type=int, default=30, help="Quantization Parameter for libsvtav1 (0-63, lower is better quality).")
     parser.add_argument("-m", "--merge", action="store_true", help="Merge all audio tracks from the source file into the output.")
