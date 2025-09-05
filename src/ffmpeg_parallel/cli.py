@@ -36,9 +36,9 @@ def main():
     preset = args.preset
     if preset is None:
         if args.codec in ['libx264', 'libx265']:
-            preset = 'medium'
+            preset = 'slow'
         elif args.codec == 'libsvtav1':
-            preset = '7' # A good balance of speed and quality for SVT-AV1
+            preset = '4' # A good balance of speed and quality for SVT-AV1
 
     # --- Bundle encoding options into a dictionary ---
     encoding_options = {
