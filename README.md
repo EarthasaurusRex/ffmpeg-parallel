@@ -7,7 +7,7 @@ A tool to run ffmpeg encodes in parallel.
 To install the tool, clone the repository and install it using pip:
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/EarthasaurusRex/ffmpeg-parallel
 cd ffmpeg-parallel
 pip install .
 ```
