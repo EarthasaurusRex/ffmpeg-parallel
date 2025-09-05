@@ -190,8 +190,8 @@ def print_size_comparison(original_file: str, comparison_file: str) -> None:
 def run_ffmpeg_parallel(video_file: str, output_file: str, codec: str, workers: int, threads_per_worker: int, encoding_options: dict):
     """Splits, encodes, and merges a video file in parallel."""
     print(f"Starting parallel encode for {video_file}:")
-    print(
-        f"  Codec: {codec}, Workers: {workers}, Threads per worker: {threads_per_worker}")
+    print(f"  Codec: {codec}, Workers: {workers}, "
+          f"Threads per worker: {threads_per_worker}")
     print(f"  Encoding options: {encoding_options}")
 
     if not output_file:
