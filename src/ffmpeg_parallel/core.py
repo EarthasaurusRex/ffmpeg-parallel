@@ -194,7 +194,7 @@ def run_ffmpeg_parallel(video_file: str, output_file: str, codec: str, workers: 
         f"  Codec: {codec}, Workers: {workers}, Threads per worker: {threads_per_worker}")
     print(f"  Encoding options: {encoding_options}")
 
-    if output_file is None:
+    if not output_file:
         codec_display_names: dict = {
             'libx264': 'H.264',
             'libx265': 'H.265',
