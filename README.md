@@ -12,12 +12,6 @@ cd ffmpeg-parallel
 pip install .
 ```
 
-Alternatively, you can install it directly from the directory if you have it downloaded:
-
-```bash
-pip install .
-```
-
 ## Usage
 
 ### Basic Usage
