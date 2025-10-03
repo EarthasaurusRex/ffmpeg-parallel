@@ -58,7 +58,7 @@ def chunk_video(video_file: str, chunks_dir: str, chunk_duration: float) -> None
         video_file (str): Path to video file
     """
     ffmpeg_split_command = [
-        "ffmpeg", "-i", video_file, "-map", "0", "-c", "copy",
+        "ffmpeg", "-i", video_file, "-map", "0", "-map", "-0:d", "-c", "copy", # Omit data stream
         "-segment_time", str(chunk_duration), "-f", "segment", "-reset_timestamps", "1",
         os.path.join(chunks_dir, "chunk_%03d.mp4")
     ]
