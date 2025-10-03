@@ -275,8 +275,12 @@ def run_ffmpeg_parallel(video_file: str, output_file: str, codec: str, workers: 
         shutil.rmtree(temp_dir)
         return
 
+    # Hotfix. Figure it out later
+    encoded_files = encoded_files[:workers]
+
     if None in encoded_files:
         print("\nError: One or more workers failed to encode. Aborting.")
+        # print(encoded_files)
         shutil.rmtree(temp_dir)
         return
 
